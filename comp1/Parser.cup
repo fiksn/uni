@@ -1,0 +1,921 @@
+package sem2;
+import java_cup.runtime.*;
+import java.io.*;
+
+parser code {:
+  
+  public static String filename = "";
+  public static boolean unrecoverableError = false;
+  
+  /* Don't do that! 
+  protected int error_sync_size() {
+    return 1;
+  }
+  */
+  
+
+  public static TSymbol buildTree(String nameOfProduction, TSymbol[] production) {
+    int left, right;
+    int i;
+    String newText = "";
+    
+    left = -1;
+    right = -1;
+    for (i=0; i<production.length; ++i) {
+      if (production[i] != null) {
+        left = i;
+        break;
+      }
+    }
+    for (i=production.length-1; i>=0; --i) {
+      if (production[i] != null) {
+        right = i;
+        break;
+      }
+    }
+    
+    if (left == -1 && right == -1) {
+      /* This production is reduced into null */
+      /* System.err.println("Production "+nameOfProduction+" is reduced to null."); */
+      return null; 
+    }
+    
+    for (i=left; i<=right; ++i) {
+      if (production[i] == null) {
+        continue;
+      }
+      newText += production[i].stringValue;
+      if (!Character.isWhitespace(newText.charAt(newText.length()-1))) {
+        newText += " ";
+      }
+    }
+    
+    TSymbol result = new TSymbol(production[left].start, production[right].end, newText, -1, nameOfProduction);
+    result.children = production;  
+    return result;
+  }
+    
+  public void report_error(String text, Object o) {
+    System.err.println(text);
+  }
+
+  public void syntax_error(Symbol cur) {
+    String s;
+    if (cur == null) {
+      return;
+    }
+    
+    if (cur.sym == sym.EOF) {
+      System.err.println("Syntax error: unexpected end of file encountered.");
+      return;
+    }
+      
+    TSymbol sym = (TSymbol)(cur.value);
+    System.err.println("Syntax error near symbol '"+sym.stringValue+"' - line: "+
+      sym.start.lineNumber+" column: "+sym.start.lineOffset); 
+    if (sym.start.lineOffset > 1) {
+      /* Context is OK only if the error is not at the begining of the line */
+      s = Report.getLine(filename, sym.start.lineNumber);
+      System.err.println(s);
+      System.err.println(Report.markerString(s, sym.start.lineOffset, '^'));
+    }
+  }
+
+  public void unrecovered_syntax_error(Symbol cur) {
+    System.err.println("Unrecoverable syntax error, giving up.");
+    System.exit(5);
+  }
+   
+  public static void main(String args[]) {
+    String xmlFilename = "output.xml";
+    PrintStream outStream = System.out;
+    Symbol tree = null;
+    parser myParser = null;
+    Lexer myLexer = null;
+        
+    if (args.length < 1) {
+      System.err.println("java sem2.parser [filename]");
+      System.exit(1);
+    } else {
+      filename = args[0];
+    }
+    
+    /* Output filename: file.pas -> file.xml (or output.xml) */
+    int index = filename.lastIndexOf('.');
+    if (index > 0) {
+      xmlFilename = filename.substring(0, index) + ".xml";
+    }
+    
+    try {
+	  FileInputStream fs = new FileInputStream(args[0]);
+      try {
+        myLexer = new Lexer(fs);
+        myLexer.filename = filename;
+        myParser = new parser(myLexer);
+        tree = myParser.parse();
+        /*
+        tree = myParser.debug_parse();
+        */
+      }
+      catch (Exception e) {
+        e.printStackTrace();
+        System.exit(6);
+      }
+    }
+    catch (FileNotFoundException fex) {
+      System.err.println("File '"+args[0]+"' not found.");
+      System.exit(2);
+    }
+    catch (Exception ex) {
+      System.err.println("Couldn't read from '"+args[0]+"' because of: "+ex.toString());
+      System.exit(3);
+    }
+    
+    if (unrecoverableError) {
+      System.err.println("There were some errors that couldn't get repaired.");
+      System.exit(11);
+    }
+        
+
+    /* XML stuff */
+    System.out.println("Done with the parsing - starting output to file "+xmlFilename+".");
+    try {
+      PrintStream output = new PrintStream(new FileOutputStream(xmlFilename));
+      if (tree == null || tree.value == null) {
+        System.err.println("Internal error!");
+        System.exit(10);
+      }
+      ((TSymbol)(tree.value)).output(output, "");                  
+      outStream.flush();
+    }
+    catch (Exception ex) {
+        System.err.println("Couldn't write to output file because of: "+ex.toString());
+    }
+
+    System.out.println("-----------------------------------");
+    
+    TSemantic semantic = new TSemantic();
+    semantic.fileName = args[0];    
+    semantic.check(((TSymbol)(tree.value)));
+
+    index = xmlFilename.lastIndexOf(".xml");
+    if (index > 0) {
+      xmlFilename = xmlFilename.substring(0, index) + ".semantic.xml";
+    } else {
+      xmlFilename = "output.semantic.xml";
+    }
+    System.out.println("Starting output of symbol table to: "+xmlFilename);
+    semantic.output(xmlFilename);
+  }
+:}
+
+terminal TSymbol AND, ARRAY, BEGIN, CASE, CONST, DIV, DO, DOWNTO, ELSE, END, FILE,
+         FOR, FUNCTION, GOTO, IF, IN, LABEL, MOD, NIL, NOT, OF, OR, PACKED, PROCEDURE,
+         PROGRAM, RECORD, REPEAT, SET, THEN, TO, TYPE, UNTIL, VAR, WHILE, WITH;
+terminal TSymbol ASSIGNMENT, COLON, COMMA, DOT, DOTDOT, EQUAL, GE, GT, LBRAC, LE, LPAREN, LT, MINUS, 
+         NOTEQUAL, PLUS, RBRAC, RPAREN, SEMICOLON, SLASH, STAR, UPARROW;
+terminal TSymbol UINT, UNUMBER;
+terminal TSymbol STRING;
+terminal TSymbol IDENTIFIER;
+
+non terminal TSymbol program, program_heading;
+
+non terminal TSymbol identifier_list;
+non terminal TSymbol block, label_declaration_part, constant_definition_part, type_definition_part,  variable_declaration_part,
+             procedure_and_function_declaration_part, statement_part;
+non terminal TSymbol label_list, label;
+non terminal TSymbol constant_list, constant_definition;
+non terminal TSymbol type_definition_list, type_definition, type_denoter,
+             new_type, new_ordinal_type, new_structured_type, new_pointer_type, enumerated_type,
+             subrange_type, array_type, record_type, set_type, file_type, component_type,
+             index_type, ordinal_type, structured_type, index_list, record_section_list,
+             variant_part, record_section, variant_selector, variant_list, variant,
+             case_constant_list, case_constant, base_type;
+non terminal TSymbol variable_declaration_list, variable_declaration;           
+non terminal TSymbol proc_or_func_declaration_list, proc_or_func_declaration, procedure_declaration,
+             function_declaration, procedure_heading, function_heading, 
+             formal_parameter_list, formal_parameter_section_list,
+             formal_parameter_section, value_parameter_specification, variable_parameter_specification;
+non terminal TSymbol compound_statement, statement_sequence, statement, open_statement, closed_statement,
+             non_labeled_open_statement, non_labeled_closed_statement, assignment_statement,
+             procedure_statement, goto_statement, case_statement, repeat_statement,
+             closed_with_statement, closed_if_statement, closed_while_statement, closed_for_statement,
+             open_with_statement, open_if_statement, open_while_statement, open_for_statement,
+             direction, record_variable_list, variable_access, indexed_variable, field_designator, index_expression_list,
+             params, actual_parameter_list, case_list_element_list, case_list_element, 
+             set_constructor, member_designator_list, member_designator;
+/* non terminal TSymbol cexpression, csimple_expression_signed, csimple_expression, cterm, cfactor; */
+non terminal TSymbol boolean_expression, expression, simple_expression_signed, simple_expression, term, factor; 
+            
+non terminal TSymbol sign, addop, mulop, relop;
+non terminal TSymbol unsigned_constant, constant;
+
+non terminal TSymbol optional_dot;
+
+/* First production (S) */
+start with program;
+
+/*** PROGRAM ***/
+program ::= 
+  program_heading:a block:b optional_dot:c
+  {: RESULT = parser.buildTree("program", new TSymbol[]{a, b, c}); :}
+  ;
+
+program_heading ::= 
+  PROGRAM:a IDENTIFIER:b LPAREN:c identifier_list:d RPAREN:e SEMICOLON:f
+  {: RESULT = parser.buildTree("program_heading", new TSymbol[]{a, b, c, d, e, f}); :}
+  | PROGRAM:a IDENTIFIER:b LPAREN:c identifier_list:d RPAREN:e 
+  {: /* I could fake a ';' here. */
+     RESULT = parser.buildTree("program_heading", new TSymbol[]{a, b, c, d, e});
+     System.err.println("Warning: Missing ';' in 'program' header.");
+  :}
+  | error {: System.err.println("Warning: Bad or missing 'program' header.");  :}
+  ;
+
+identifier_list ::= 
+   identifier_list:a COMMA:b IDENTIFIER:c 
+   {: RESULT = parser.buildTree("identifier_list", new TSymbol[]{a, b, c}); :}
+   | IDENTIFIER:a
+   {: RESULT = parser.buildTree("identifier_list", new TSymbol[]{a}); :}
+   | error IDENTIFIER {: System.err.println("Bad identifier list - maybe you forgot a ','."); :}
+   | error {: System.err.println("Bad identifier list - maybe you forgot another identifier around the ','."); :}
+  ;
+
+/*********************************************************************************/
+
+/*** BLOCK ***/
+block ::= label_declaration_part:a
+ constant_definition_part:b
+ type_definition_part:c
+ variable_declaration_part:d
+ procedure_and_function_declaration_part:e
+ statement_part:f
+ {: RESULT = parser.buildTree("block", new TSymbol[]{a, b, c, d, e, f}); :}
+ | error {: System.err.println("Bad block, please RTFM!"); :}
+ ;
+
+/*********************************************************************************/
+
+/* Label declaration part */
+label_declaration_part ::= LABEL:a label_list:b SEMICOLON:c
+ {: RESULT = parser.buildTree("label_declaration_part", new TSymbol[]{a, b, c}); :}
+ | error {: System.err.println("Bad label declaration part."); :}
+ |
+ ;
+label_list ::= label_list:a COMMA:b label:c  
+ {: RESULT = parser.buildTree("label_list", new TSymbol[]{a, b, c}); :}
+ | label:a
+ {: RESULT = parser.buildTree("label_list", new TSymbol[]{a}); :}
+ | error {: System.err.println("Bad label list."); :} 
+ ;
+label ::= UINT:a
+ {: RESULT = parser.buildTree("label", new TSymbol[]{a}); :}
+ ;
+ 
+/*********************************************************************************/
+
+/* Constant definition */
+constant_definition_part ::= CONST:a constant_list:b
+ {: RESULT = parser.buildTree("constant_definition_part", new TSymbol[]{a, b}); :}
+ |
+ ;
+constant_list ::= constant_list:a constant_definition:b 
+ {: RESULT = parser.buildTree("constant_list", new TSymbol[]{a, b}); :}
+ | constant_definition:a
+ {: RESULT = parser.buildTree("constant_list", new TSymbol[]{a}); :}
+ ;
+
+/*
+constant_definition ::= IDENTIFIER:a EQUAL:b cexpression:c SEMICOLON:d
+{: RESULT = parser.buildTree("constant_definition", new TSymbol[]{a, b, c, d}); :}
+;
+*/
+
+constant_definition ::= IDENTIFIER:a EQUAL:b constant:c SEMICOLON:d
+{: RESULT = parser.buildTree("constant_definition", new TSymbol[]{a, b, c, d}); :}
+;
+/*********************************************************************************/
+
+/* Type definition part */
+
+type_definition_part ::= TYPE:a type_definition_list:b
+ {: RESULT = parser.buildTree("type_definition_part", new TSymbol[]{a, b}); :}
+ |
+ ;
+type_definition_list ::= type_definition_list:a type_definition:b
+ {: RESULT = parser.buildTree("type_definition_list", new TSymbol[]{a, b}); :}
+ | type_definition:a
+ {: RESULT = parser.buildTree("type_definition_list", new TSymbol[]{a}); :}
+ ;
+type_definition ::= IDENTIFIER:a EQUAL:b type_denoter:c SEMICOLON:d
+ {: RESULT = parser.buildTree("type_definition", new TSymbol[]{a, b, c, d}); :}
+ ;
+type_denoter ::= IDENTIFIER:a
+ {: RESULT = parser.buildTree("type_denoter", new TSymbol[]{a}); :}
+ | new_type:a
+ {: RESULT = parser.buildTree("type_denoter", new TSymbol[]{a}); :}
+ ;
+new_type ::= new_ordinal_type:a
+ {: RESULT = parser.buildTree("new_type", new TSymbol[]{a}); :}
+ | new_structured_type:a
+ {: RESULT = parser.buildTree("new_type", new TSymbol[]{a}); :}
+ | new_pointer_type:a
+ {: RESULT = parser.buildTree("new_type", new TSymbol[]{a}); :}
+ ;
+new_ordinal_type ::= enumerated_type:a
+ {: RESULT = parser.buildTree("new_ordinal_type", new TSymbol[]{a}); :}
+ | subrange_type:a
+ {: RESULT = parser.buildTree("new_ordinal_type", new TSymbol[]{a}); :}
+ ;
+enumerated_type ::= LPAREN:a identifier_list:b RPAREN:c
+ {: RESULT = parser.buildTree("enumerated_type", new TSymbol[]{a, b, c}); :}
+ ;
+subrange_type ::= constant:a DOTDOT:b constant:c
+ {: RESULT = parser.buildTree("subrange_type", new TSymbol[]{a, b, c}); :}
+ | error {: System.err.println("Range should be '<number1> .. <number2>'."); 
+   parser.unrecoverableError = true; :}
+ ;
+new_structured_type ::= structured_type:a
+ {: RESULT = parser.buildTree("new_structured_type", new TSymbol[]{a}); :}
+ | PACKED:a structured_type:b
+ {: RESULT = parser.buildTree("new_structured_type", new TSymbol[]{a, b}); :}
+ ;
+structured_type ::= array_type:a
+ {: RESULT = parser.buildTree("structured_type", new TSymbol[]{a}); :}
+ | record_type:a
+ {: RESULT = parser.buildTree("structured_type", new TSymbol[]{a}); :}
+ | set_type:a
+ {: RESULT = parser.buildTree("structured_type", new TSymbol[]{a}); :}
+ | file_type:a
+ {: RESULT = parser.buildTree("structured_type", new TSymbol[]{a}); :}
+ ;
+array_type ::= ARRAY:a LBRAC:b index_list:c RBRAC:d OF:e component_type:f
+ {: RESULT = parser.buildTree("array_type", new TSymbol[]{a, b, c, d, e, f}); :}
+ | ARRAY LBRAC index_list OF:a component_type 
+ {: /* Evil hack */
+ parser.syntax_error(new Symbol(sym.AND, a));
+ System.err.println("']' is probably missing."); 
+ parser.unrecoverableError = true; :}
+ | ARRAY error index_list RBRAC OF component_type 
+ {: System.err.println("'[' is probably missing."); parser.unrecoverableError = true; :}
+ | ARRAY LBRAC index_list RBRAC error
+ {: System.err.println("Bad array type."); parser.unrecoverableError = true; :}
+ ;
+index_list ::= index_list:a COMMA:b index_type:c
+ {: RESULT = parser.buildTree("index_list", new TSymbol[]{a, b, c}); :}
+ | index_type:a
+ {: RESULT = parser.buildTree("index_list", new TSymbol[]{a}); :}
+ | COMMA error {: System.err.println("Bad index list, maybe you forgot a type."); :}
+ | index_list error index_type
+ ;
+index_type ::= ordinal_type:a 
+ {: RESULT = parser.buildTree("index_type", new TSymbol[]{a}); :}
+ ;
+ordinal_type ::= new_ordinal_type:a
+ {: RESULT = parser.buildTree("ordinal_type", new TSymbol[]{a}); :}
+ | IDENTIFIER:a
+ {: RESULT = parser.buildTree("ordinal_type", new TSymbol[]{a}); :}
+ ;
+component_type ::= type_denoter:a 
+ {: RESULT = parser.buildTree("component_type", new TSymbol[]{a}); :}
+ ;
+record_type ::= RECORD:a record_section_list:b END:c
+ {: RESULT = parser.buildTree("record_type", new TSymbol[]{a, b, c}); :}
+ | RECORD:a record_section_list:b SEMICOLON:c variant_part:d END:e
+ {: RESULT = parser.buildTree("record_type", new TSymbol[]{a, b, c, d, e}); :}
+ | RECORD:a variant_part:b END:c
+ {: RESULT = parser.buildTree("record_type", new TSymbol[]{a, b, c}); :}
+ ;
+record_section_list ::= record_section_list:a SEMICOLON:b record_section:c
+ {: RESULT = parser.buildTree("record_section_list", new TSymbol[]{a, b, c}); :}
+ | record_section:a
+ {: RESULT = parser.buildTree("record_section_list", new TSymbol[]{a}); :}
+ ;
+record_section ::= identifier_list:a COLON:b type_denoter:c
+ {: RESULT = parser.buildTree("record_section", new TSymbol[]{a, b, c}); :}
+ ;
+variant_part ::= CASE:a variant_selector:b OF:c variant_list:d SEMICOLON:e
+ {: RESULT = parser.buildTree("variant_part", new TSymbol[]{a, b, c, d, e}); :}
+ | CASE:a variant_selector:b OF:c variant_list:d
+ {: RESULT = parser.buildTree("variant_part", new TSymbol[]{a, b, c, d}); :}
+ | CASE:a variant_selector:b OF:c
+ {: RESULT = parser.buildTree("variant_part", new TSymbol[]{a, b, c}); :}
+ | error {: System.err.println("A problem with 'case'."); :}
+ |
+ ;
+variant_selector ::= IDENTIFIER:a COLON:b IDENTIFIER:c
+ {: RESULT = parser.buildTree("variant_selector", new TSymbol[]{a, b, c}); :}
+ | IDENTIFIER:a
+ {: RESULT = parser.buildTree("variant_selector", new TSymbol[]{a}); :}
+ ;
+variant_list ::= variant_list:a SEMICOLON:b variant:c
+ {: RESULT = parser.buildTree("variant_list", new TSymbol[]{a, b, c}); :}
+ | variant:a
+ {: RESULT = parser.buildTree("variant_list", new TSymbol[]{a}); :}
+ ;
+variant ::= case_constant_list:a COLON:b LPAREN:c record_section_list:d RPAREN:e
+ {: RESULT = parser.buildTree("variant", new TSymbol[]{a, b, c, d, e}); :}
+ | case_constant_list:a COLON:b LPAREN:c record_section_list:d SEMICOLON:e
+  variant_part:f RPAREN:g
+ {: RESULT = parser.buildTree("variant", new TSymbol[]{a, b, c, d, e, f, g}); :}
+ | case_constant_list:a COLON:b LPAREN:c variant_part:d RPAREN:e
+ {: RESULT = parser.buildTree("variant", new TSymbol[]{a, b, c, d, e}); :}
+ ;
+case_constant_list ::= case_constant_list:a COMMA:b case_constant:c
+ {: RESULT = parser.buildTree("case_constant_list", new TSymbol[]{a, b, c}); :}
+ | case_constant:a
+ {: RESULT = parser.buildTree("case_constant_list", new TSymbol[]{a}); :}
+ ;
+case_constant ::= constant:a
+ {: RESULT = parser.buildTree("case_constant", new TSymbol[]{a}); :}
+ | constant:a DOTDOT:b constant:c
+ {: RESULT = parser.buildTree("case_constant", new TSymbol[]{a, b, c}); :}
+ ;
+set_type ::= SET:a OF:b base_type:c
+ {: RESULT = parser.buildTree("set_type", new TSymbol[]{a, b, c}); :}
+ | SET error {: System.err.println("Bad set type."); :}
+ ;
+base_type ::= ordinal_type:a
+ {: RESULT = parser.buildTree("base_type", new TSymbol[]{a}); :}
+ ;
+file_type ::= FILE:a OF:b component_type:c
+ {: RESULT = parser.buildTree("file_type", new TSymbol[]{a, b, c}); :}
+ | FILE error {: System.err.println("Bad file type."); parser.unrecoverableError = true; :}
+ ;
+new_pointer_type ::= UPARROW:a IDENTIFIER:b
+ {: RESULT = parser.buildTree("new_pointer_type", new TSymbol[]{a, b}); :}
+ | UPARROW error 
+ {: System.err.println("The uparrow means pointer, use it like that."); 
+    parser.unrecoverableError = true;
+ :}
+ ;
+
+/*********************************************************************************/
+
+/* Variable declaration part */
+
+variable_declaration_part ::= VAR:a variable_declaration_list:b SEMICOLON:c
+ {: RESULT = parser.buildTree("variable_declaration_part", new TSymbol[]{a, b, c}); :}
+ | VAR variable_declaration_list error
+ {: System.err.println("Missing ';' in variable declaration part."); 
+    parser.unrecoverableError = true;
+ :}
+ | 
+ ;
+variable_declaration_list ::=
+ variable_declaration_list:a SEMICOLON:b variable_declaration:c
+ {: RESULT = parser.buildTree("variable_declaration_list", new TSymbol[]{a, b, c}); :}
+ | variable_declaration:a
+ {: RESULT = parser.buildTree("variable_declaration_list", new TSymbol[]{a}); :}
+ ;
+variable_declaration ::= identifier_list:a COLON:b type_denoter:c
+ {: RESULT = parser.buildTree("variable_declaration", new TSymbol[]{a, b, c}); :}
+ ;
+
+/*********************************************************************************/
+
+/* Procudure and function declaration part */
+
+procedure_and_function_declaration_part ::= proc_or_func_declaration_list:a SEMICOLON:b
+ {: RESULT = parser.buildTree("procedure_and_function_declaration_part", new TSymbol[]{a, b}); :}
+ |
+ ;
+proc_or_func_declaration_list ::=
+   proc_or_func_declaration_list:a SEMICOLON:b proc_or_func_declaration:c
+ {: RESULT = parser.buildTree("proc_or_func_declaration_list", new TSymbol[]{a, b, c}); :}
+ | proc_or_func_declaration:a
+ {: RESULT = parser.buildTree("proc_or_func_declaration_list", new TSymbol[]{a}); :}
+ ;
+proc_or_func_declaration ::= procedure_declaration:a
+ {: RESULT = parser.buildTree("proc_or_func_declaration", new TSymbol[]{a}); :}
+ | function_declaration:a
+ {: RESULT = parser.buildTree("proc_or_func_declaration", new TSymbol[]{a}); :}
+ ;
+procedure_declaration ::= procedure_heading:a SEMICOLON:b block:c
+ {: RESULT = parser.buildTree("procedure_declaration", new TSymbol[]{a, b, c}); :}
+ ;
+procedure_heading ::= PROCEDURE:a IDENTIFIER:b
+ {: RESULT = parser.buildTree("procedure_heading", new TSymbol[]{a, b}); :}
+ | PROCEDURE:a IDENTIFIER:b formal_parameter_list:c
+ {: RESULT = parser.buildTree("procedure_heading", new TSymbol[]{a, b, c}); :}
+ ;
+formal_parameter_list ::= LPAREN:a formal_parameter_section_list:b RPAREN:c
+ {: RESULT = parser.buildTree("formal_parameter_list", new TSymbol[]{a, b, c}); :}
+ ;
+formal_parameter_section_list ::= formal_parameter_section_list:a SEMICOLON:b formal_parameter_section:c
+ {: RESULT = parser.buildTree("formal_parameter_section_list", new TSymbol[]{a, b, c}); :}
+ | formal_parameter_section:a
+ {: RESULT = parser.buildTree("formal_parameter_section_list", new TSymbol[]{a}); :}
+ ;
+formal_parameter_section ::= value_parameter_specification:a
+ {: RESULT = parser.buildTree("formal_parameter_section", new TSymbol[]{a}); :}
+ | variable_parameter_specification:a
+ {: RESULT = parser.buildTree("formal_parameter_section", new TSymbol[]{a}); :}
+/*
+ | procedure_heading:a
+ {: RESULT = parser.buildTree("formal_parameter_section", new TSymbol[]{a}); :}
+ | function_heading:a
+ {: RESULT = parser.buildTree("formal_parameter_section", new TSymbol[]{a}); :}
+*/
+ ;
+value_parameter_specification ::= identifier_list:a COLON:b IDENTIFIER:c
+ {: RESULT = parser.buildTree("value_parameter_specification", new TSymbol[]{a, b, c}); :}
+ ;
+variable_parameter_specification ::= VAR:a identifier_list:b COLON:c IDENTIFIER:d
+ {: RESULT = parser.buildTree("variable_parameter_specification", new TSymbol[]{a, b, c, d}); :}
+ ;
+
+function_declaration ::= 
+/*
+ FUNCTION:a IDENTIFIER:b SEMICOLON:c block:d
+ {: RESULT = parser.buildTree("function_declaration", new TSymbol[]{a, b, c, d}); :}
+ | 
+*/
+function_heading:a SEMICOLON:b block:c
+ {: RESULT = parser.buildTree("function_declaration", new TSymbol[]{a, b, c}); :}
+ ;
+function_heading ::= FUNCTION:a IDENTIFIER:b COLON:c IDENTIFIER:d
+ {: RESULT = parser.buildTree("function_heading", new TSymbol[]{a, b, c, d}); :}
+ | FUNCTION:a IDENTIFIER:b formal_parameter_list:c COLON:d IDENTIFIER:e
+ {: RESULT = parser.buildTree("function_heading", new TSymbol[]{a, b, c, d, e}); :}
+ ;
+
+
+/*********************************************************************************/
+
+/* Statement part */
+statement_part ::= compound_statement:a
+ {: RESULT = parser.buildTree("statement_part", new TSymbol[]{a}); :}
+ ;
+compound_statement ::= BEGIN:a statement_sequence:b END:c 
+ {: RESULT = parser.buildTree("compound_statement", new TSymbol[]{a, b, c}); :}
+ ;
+statement_sequence ::= statement:a SEMICOLON:b statement_sequence:c
+ {: RESULT = parser.buildTree("statement_sequence", new TSymbol[]{a, b, c}); :}
+ | statement:a
+ {: RESULT = parser.buildTree("statement_sequence", new TSymbol[]{a}); :}
+ | error statement_sequence
+ {: System.err.println("Maybe you forgot a ';'."); :}
+ ;
+statement ::= open_statement:a
+ {: RESULT = parser.buildTree("statement", new TSymbol[]{a}); :}
+ | closed_statement:a
+ {: RESULT = parser.buildTree("statement", new TSymbol[]{a}); :}
+ ;
+open_statement ::= label:a COLON:b non_labeled_open_statement:c
+ {: RESULT = parser.buildTree("open_statement", new TSymbol[]{a, b, c}); :}
+ | non_labeled_open_statement:a
+ {: RESULT = parser.buildTree("open_statement", new TSymbol[]{a}); :}
+ ;
+closed_statement ::= label:a COLON:b non_labeled_closed_statement:c
+ {: RESULT = parser.buildTree("closed_statement", new TSymbol[]{a, b, c}); :}
+ | non_labeled_closed_statement:a
+ {: RESULT = parser.buildTree("closed_statement", new TSymbol[]{a}); :}
+ ;
+
+non_labeled_closed_statement ::= assignment_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | procedure_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | goto_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | compound_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | case_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | repeat_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | closed_with_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | closed_if_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | closed_while_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ | closed_for_statement:a
+ {: RESULT = parser.buildTree("non_labeled_closed_statement", new TSymbol[]{a}); :}
+ |
+ ;
+
+non_labeled_open_statement ::= open_with_statement:a
+ {: RESULT = parser.buildTree("non_labeled_open_statement", new TSymbol[]{a}); :}
+ | open_if_statement:a
+ {: RESULT = parser.buildTree("non_labeled_open_statement", new TSymbol[]{a}); :}
+ | open_while_statement:a
+ {: RESULT = parser.buildTree("non_labeled_open_statement", new TSymbol[]{a}); :}
+ | open_for_statement:a
+ {: RESULT = parser.buildTree("non_labeled_open_statement", new TSymbol[]{a}); :}
+ ;
+
+repeat_statement ::= REPEAT:a statement_sequence:b UNTIL:c boolean_expression:d
+ {: RESULT = parser.buildTree("repeat_statement", new TSymbol[]{a, b, c, d}); :}
+ ;
+
+open_while_statement ::= WHILE:a boolean_expression:b DO:c open_statement:d
+ {: RESULT = parser.buildTree("open_while_statement", new TSymbol[]{a, b, c, d}); :}
+ | WHILE error DO {: System.err.println("Bad 'while' statement."); parser.unrecoverableError = true; :}
+ ;
+
+closed_while_statement ::= WHILE:a boolean_expression:b DO:c closed_statement:d
+ {: RESULT = parser.buildTree("closed_while_statement", new TSymbol[]{a, b, c, d}); :}
+ | WHILE error {: System.err.println("Bad 'while' statement."); parser.unrecoverableError = true; :}
+ ;
+
+direction ::= TO:a
+ {: RESULT = parser.buildTree("direction", new TSymbol[]{a}); :}
+ | DOWNTO:a
+ {: RESULT = parser.buildTree("direction", new TSymbol[]{a}); :}
+ | error 
+ {: System.err.println("The direction either needs to be 'to' or 'downto'."); 
+    parser.unrecoverableError = true; :}
+ ;
+
+open_for_statement ::= FOR:a IDENTIFIER:b ASSIGNMENT:c expression:d direction:e
+   expression:f DO:g open_statement:h
+   {: RESULT = parser.buildTree("open_for_statement", new TSymbol[]{a, b, c, d, e, f, g, h}); :}
+   | FOR error EQUAL expression direction expression DO open_statement
+   {: System.err.println("Use ':=' instead of '=' in the variable assignment at the 'for' loop."); parser.unrecoverableError = true; :}
+   | FOR IDENTIFIER ASSIGNMENT expression direction expression error
+   {: System.err.println("Maybe there is a 'do' in the 'for' loop missing."); parser.unrecoverableError = true; :}
+   | FOR error ASSIGNMENT {: System.err.println("Bad 'for' statement."); parser.unrecoverableError = true; :}
+ ;
+closed_for_statement ::= FOR:a IDENTIFIER:b ASSIGNMENT:c expression:d direction:e
+   expression:f DO:g closed_statement:h
+   {: RESULT = parser.buildTree("closed_for_statement", new TSymbol[]{a, b, c, d, e, f, g, h}); :}
+   | FOR error EQUAL expression direction expression DO closed_statement
+   {: System.err.println("Use ':=' instead of '=' in the variable assignment at the 'for' loop."); 
+      parser.unrecoverableError = true;
+   :}
+   | FOR error {: System.err.println("Bad 'for' statement."); parser.unrecoverableError = true; :}
+   ;
+   
+open_with_statement ::= WITH:a record_variable_list:b DO:c open_statement:d
+ {: RESULT = parser.buildTree("open_with_statement", new TSymbol[]{a, b, c, d}); :}
+ | WITH error DO {: System.err.println("Bad 'with' statement."); parser.unrecoverableError = true; :}
+ ;
+closed_with_statement ::= WITH:a record_variable_list:b DO:c closed_statement:d
+ {: RESULT = parser.buildTree("closed_with_statement", new TSymbol[]{a, b, c, d}); :}
+ | WITH error {: System.err.println("Bad 'with' statement."); parser.unrecoverableError = true; :}
+ ;
+
+open_if_statement ::= IF:a boolean_expression:b THEN:c statement:d
+ {: RESULT = parser.buildTree("open_if_statement", new TSymbol[]{a, b, c, d}); :}
+ | IF:a boolean_expression:b THEN:c closed_statement:d ELSE:e open_statement:f
+ {: RESULT = parser.buildTree("open_if_statement", new TSymbol[]{a, b, c, d, e, f}); :}
+ | IF error THEN {: System.err.println("Bad 'if' statement."); parser.unrecoverableError = true;  :}
+ ;
+
+closed_if_statement ::= IF:a boolean_expression:b THEN:c closed_statement:d
+   ELSE:e closed_statement:f
+ {: RESULT = parser.buildTree("closed_if_statement", new TSymbol[]{a, b, c, d, e, f}); :}
+ | IF error {: System.err.println("Bad 'if' statement."); parser.unrecoverableError = true; :}
+ ;
+
+assignment_statement ::= variable_access:a ASSIGNMENT:b expression:c
+ {: RESULT = parser.buildTree("assignment_statement", new TSymbol[]{a, b, c}); :}
+ | error EQUAL expression
+ {: System.err.println("Make sure you are using ':=' instead of '='."); parser.unrecoverableError = true; :}
+ ;
+
+variable_access ::= 
+ /* I need to be able to say function := something or variable := something */
+ IDENTIFIER:a
+ {: RESULT = parser.buildTree("variable_access", new TSymbol[]{a}); :}
+ | indexed_variable:a
+ {: RESULT = parser.buildTree("variable_access", new TSymbol[]{a}); :}
+ | field_designator:a
+ {: RESULT = parser.buildTree("variable_access", new TSymbol[]{a}); :}
+ | variable_access:a UPARROW:b
+ {: RESULT = parser.buildTree("variable_access", new TSymbol[]{a, b}); :}
+ ;
+
+indexed_variable ::= variable_access:a LBRAC:b index_expression_list:c RBRAC:d
+ {: RESULT = parser.buildTree("indexed_variable", new TSymbol[]{a, b, c, d}); :}
+ ;
+
+index_expression_list ::= index_expression_list:a COMMA:b expression:c
+ {: RESULT = parser.buildTree("index_expression_list", new TSymbol[]{a, b, c}); :}
+ | expression:a
+ {: RESULT = parser.buildTree("index_expression_list", new TSymbol[]{a}); :}
+ ;
+
+field_designator ::= variable_access:a DOT:b IDENTIFIER:c
+ {: RESULT = parser.buildTree("field_designator", new TSymbol[]{a, b, c}); :}
+ ;
+
+procedure_statement ::= IDENTIFIER:a params:b
+ {: RESULT = parser.buildTree("procedure_statement", new TSymbol[]{a, b}); :}
+ | IDENTIFIER:a
+ {: RESULT = parser.buildTree("procedure_statement", new TSymbol[]{a}); :}
+ ;
+params ::= LPAREN:a actual_parameter_list:b RPAREN:c 
+ {: RESULT = parser.buildTree("params", new TSymbol[]{a, b, c}); :}
+ ;
+
+actual_parameter_list ::= actual_parameter_list:a COMMA:b expression:c
+ {: RESULT = parser.buildTree("actual_parameter_list", new TSymbol[]{a, b, c}); :}
+ | expression:a
+ {: RESULT = parser.buildTree("actual_parameter_list", new TSymbol[]{a}); :}
+ ;
+ 
+goto_statement ::= GOTO:a label:b
+ {: RESULT = parser.buildTree("goto_statement", new TSymbol[]{a, b}); :}
+ ;
+
+case_statement ::= CASE:a expression:b OF:c case_list_element_list:d END:e
+ {: RESULT = parser.buildTree("case_statement", new TSymbol[]{a, b, c, d, e}); :}
+ | CASE:a expression:b OF:c case_list_element_list:d SEMICOLON:e END:f
+ {: RESULT = parser.buildTree("case_statement", new TSymbol[]{a, b, c, d, e, f}); :}
+ ;
+
+case_list_element_list ::= case_list_element_list:a SEMICOLON:b case_list_element:c
+ {: RESULT = parser.buildTree("case_list_element_list", new TSymbol[]{a, b, c}); :}
+ | case_list_element:a
+ {: RESULT = parser.buildTree("case_list_element_list", new TSymbol[]{a}); :}
+ ;
+
+case_list_element ::= case_constant_list:a COLON:b statement:c
+ {: RESULT = parser.buildTree("case_list_element", new TSymbol[]{a, b, c}); :}
+ ;
+record_variable_list ::= record_variable_list:a COMMA:b variable_access:c
+ {: RESULT = parser.buildTree("record_variable_list", new TSymbol[]{a, b, c}); :}
+ | variable_access:a
+ {: RESULT = parser.buildTree("record_variable_list", new TSymbol[]{a}); :}
+ ;
+
+set_constructor ::= LBRAC:a member_designator_list:b RBRAC:c
+ {: RESULT = parser.buildTree("set_constructor", new TSymbol[]{a, b, c}); :}
+ | LBRAC:a RBRAC:b
+ {: RESULT = parser.buildTree("set_constructor", new TSymbol[]{a, b}); :}
+ ;
+member_designator_list ::= member_designator_list:a COMMA:b member_designator:c
+ {: RESULT = parser.buildTree("member_designator_list", new TSymbol[]{a, b, c}); :}
+ | member_designator:a
+ {: RESULT = parser.buildTree("member_designator_list", new TSymbol[]{a}); :}
+ ;
+member_designator ::= member_designator:a DOTDOT:b expression:c
+ {: RESULT = parser.buildTree("member_designator", new TSymbol[]{a, b, c}); :}
+ | expression:a
+ {: RESULT = parser.buildTree("member_designator", new TSymbol[]{a}); :}
+ ;
+
+
+
+
+
+/* EXPRESSION STUFF */
+
+boolean_expression ::= expression:a
+ {: RESULT = parser.buildTree("boolean_expression", new TSymbol[]{a}); :}
+ ;
+
+expression ::= simple_expression_signed:a
+ {: RESULT = parser.buildTree("expression", new TSymbol[]{a}); :}
+ | simple_expression_signed:a relop:b simple_expression_signed:c
+ {: RESULT = parser.buildTree("expression", new TSymbol[]{a, b, c}); :}
+ | error expression
+ {: System.err.println("Missing operator."); :}
+ | error ASSIGNMENT expression
+ {: System.err.println("Maybe '=' instead of ':=' would be better." +
+    " This is not C - you can't use assignments in expressions, sorry."); 
+    parser.unrecoverableError = true; 
+    :}
+ ;
+simple_expression ::= term:a
+ {: RESULT = parser.buildTree("simple_expression", new TSymbol[]{a}); :}
+ | simple_expression:a addop:b term:c
+ {: RESULT = parser.buildTree("simple_expression", new TSymbol[]{a, b, c}); :}
+ ;
+simple_expression_signed ::= simple_expression:a
+ {: RESULT = parser.buildTree("simple_expression_signed", new TSymbol[]{a}); :}
+ | sign:a simple_expression:b
+ {: RESULT = parser.buildTree("simple_expression_signed", new TSymbol[]{a, b}); :}
+ ;
+term ::= factor:a
+ {: RESULT = parser.buildTree("term", new TSymbol[]{a}); :}
+ | term:a mulop:b factor:c
+ {: RESULT = parser.buildTree("term", new TSymbol[]{a, b, c}); :}
+ ;
+factor ::= LPAREN:a expression:b RPAREN:c
+ {: RESULT = parser.buildTree("factor", new TSymbol[]{a, b, c}); :}
+ | unsigned_constant:a
+ {: RESULT = parser.buildTree("factor", new TSymbol[]{a}); :}
+ | variable_access:a
+ {: RESULT = parser.buildTree("factor", new TSymbol[]{a}); :}
+ | /* function_designator - for functions without a parameter variable_access will reduce to IDENTIFIER */
+   IDENTIFIER:a params:b
+ {: RESULT = parser.buildTree("factor", new TSymbol[]{a, b}); :}
+ | set_constructor:a
+ {: RESULT = parser.buildTree("factor", new TSymbol[]{a}); :}
+ | NOT:a factor:b
+ {: RESULT = parser.buildTree("factor", new TSymbol[]{a, b}); :}
+ | LPAREN expression error 
+ {: System.err.println("')' is probably missing."); parser.unrecoverableError = true; :}
+ | error RPAREN 
+ {: System.err.println("'(' is probably missing."); parser.unrecoverableError = true; :}
+ ;
+
+/* EXPRESSION STUFF - constant 
+cexpression ::= csimple_expression_signed:a
+ {: RESULT = parser.buildTree("cexpression", new TSymbol[]{a}); :}
+ | csimple_expression_signed:a relop:b csimple_expression_signed:c
+ {: RESULT = parser.buildTree("cexpression", new TSymbol[]{a, b, c}); :}
+ ;
+csimple_expression ::= cterm:a
+ {: RESULT = parser.buildTree("csimple_expression", new TSymbol[]{a}); :}
+ | csimple_expression:a addop:b cterm:c
+ {: RESULT = parser.buildTree("csimple_expression", new TSymbol[]{a, b, c}); :}
+ ;
+csimple_expression_signed ::= csimple_expression:a
+ {: RESULT = parser.buildTree("csimple_expression_signed", new TSymbol[]{a}); :}
+ | sign:a csimple_expression:b
+ {: RESULT = parser.buildTree("csimple_expression_signed", new TSymbol[]{a, b}); :}
+ ;
+cterm ::= cfactor:a
+ {: RESULT = parser.buildTree("cterm", new TSymbol[]{a}); :}
+ | cterm:a mulop:b cfactor:c
+ {: RESULT = parser.buildTree("cterm", new TSymbol[]{a, b, c}); :}
+ ;
+cfactor ::= IDENTIFIER:a
+ {: RESULT = parser.buildTree("cfactor", new TSymbol[]{a}); :}
+ | LPAREN:a cexpression:b RPAREN:c
+ {: RESULT = parser.buildTree("cfactor", new TSymbol[]{a, b, c}); :}
+ | unsigned_constant:a
+ {: RESULT = parser.buildTree("cfactor", new TSymbol[]{a}); :}
+ | NOT:a cfactor:b
+ {: RESULT = parser.buildTree("cfactor", new TSymbol[]{a, b}); :}
+ ;
+*/
+
+/* Other stuff */
+sign ::= PLUS:a 
+  {: RESULT = parser.buildTree("sign", new TSymbol[]{a}); :}
+  | MINUS:a
+  {: RESULT = parser.buildTree("sign", new TSymbol[]{a}); :}
+  ;
+addop::= PLUS:a 
+  {: RESULT = parser.buildTree("addop", new TSymbol[]{a}); :}
+  | MINUS:a 
+  {: RESULT = parser.buildTree("addop", new TSymbol[]{a}); :}
+  | OR:a
+  {: RESULT = parser.buildTree("addop", new TSymbol[]{a}); :}
+  ;
+mulop ::= STAR:a 
+  {: RESULT = parser.buildTree("mulop", new TSymbol[]{a}); :}
+  | SLASH:a 
+  {: RESULT = parser.buildTree("mulop", new TSymbol[]{a}); :}
+  | DIV:a 
+  {: RESULT = parser.buildTree("mulop", new TSymbol[]{a}); :}
+  | MOD:a 
+  {: RESULT = parser.buildTree("mulop", new TSymbol[]{a}); :}
+  | AND:a
+  {: RESULT = parser.buildTree("mulop", new TSymbol[]{a}); :}
+  ;
+
+relop ::= EQUAL:a 
+  {: RESULT = parser.buildTree("relop", new TSymbol[]{a}); :}
+  | NOTEQUAL:a 
+  {: RESULT = parser.buildTree("relop", new TSymbol[]{a}); :}
+  | LT:a 
+  {: RESULT = parser.buildTree("relop", new TSymbol[]{a}); :}
+  | GT:a 
+  {: RESULT = parser.buildTree("relop", new TSymbol[]{a}); :}
+  | LE:a 
+  {: RESULT = parser.buildTree("relop", new TSymbol[]{a}); :}
+  | GE:a 
+  {: RESULT = parser.buildTree("relop", new TSymbol[]{a}); :}
+  | IN:a
+  {: RESULT = parser.buildTree("relop", new TSymbol[]{a}); :}
+  ;
+
+/* Constants */
+unsigned_constant ::= UNUMBER:a
+  {: RESULT = parser.buildTree("unsigned_constant", new TSymbol[]{a}); :}
+  | UINT:a
+  {: RESULT = parser.buildTree("unsigned_constant", new TSymbol[]{a}); :}
+  | STRING:a 
+  {: RESULT = parser.buildTree("unsigned_constant", new TSymbol[]{a}); :}
+  | NIL:a
+  {: RESULT = parser.buildTree("unsigned_constant", new TSymbol[]{a}); :}
+  ;
+constant ::= sign:a IDENTIFIER:b 
+  {: RESULT = parser.buildTree("constant", new TSymbol[]{a, b}); :}
+  | sign:a UNUMBER:b 
+  {: RESULT = parser.buildTree("constant", new TSymbol[]{a, b}); :}
+  | UNUMBER:a
+  | sign:a UINT:b 
+  {: RESULT = parser.buildTree("constant", new TSymbol[]{a, b}); :}
+  | UINT:a
+  {: RESULT = parser.buildTree("constant", new TSymbol[]{a}); :}
+  | IDENTIFIER:a
+  {: RESULT = parser.buildTree("constant", new TSymbol[]{a}); :}
+  | STRING:a
+  {: RESULT = parser.buildTree("constant", new TSymbol[]{a}); :}
+  ;
+
+/* Needed for error recovery - result is bubbeled up so it doesn't look as a
+ * production in the output.
+ */
+optional_dot ::= DOT:a {: RESULT = a; :}
+  | {: System.err.println("Warning: Missing ending '.' character."); :}
+  ;
+
